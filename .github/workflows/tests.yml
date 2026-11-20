@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: ai-model/requirements.txt
+      - name: Instalar dependencias
+        run: pip install -r ai-model/requirements.txt
+      - name: Pruebas (preprocesamiento, modelo, protocolo, simulador)
+        run: python -m pytest
+      - name: Autotest del simulador
+        run: python communication/simulator/mock_ecg_device.py selftest --duration 30 --drop 0.05
+
+  firmware-host:
+    # Lógica del firmware compilada y probada en PC (no hay ESP32 en CI).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Dependencias para generar los vectores de prueba
+        run: pip install numpy scipy
+      - name: Compilar y ejecutar pruebas host
+        run: sh device-firmware/test/host/run_host_tests.sh

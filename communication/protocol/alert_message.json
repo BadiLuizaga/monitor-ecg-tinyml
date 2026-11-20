@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "alert",
+  "event_id": 42,
+  "event": "arrhythmia_suspected",
+  "beat_class": "V",
+  "confidence": 0.91,
+  "sample_index": 123456,
+  "simulated": false
+}

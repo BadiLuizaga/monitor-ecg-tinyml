@@ -1,0 +1,176 @@
+{
+  "_description": "Ejemplos validos del protocolo v1, generados con communication/protocol/ecg_protocol.py y verificados por las pruebas.",
+  "json_messages": [
+    {
+      "characteristic": "DEVICE_INFO",
+      "note": "read tras conectar (long read)",
+      "bytes": 211,
+      "message": {
+        "v": 1,
+        "type": "device_info",
+        "device_id": "ECG-TINYML-1A2B",
+        "fw_version": "0.1.0",
+        "hw_model": "SIMULATOR",
+        "sample_rate_hz": 360,
+        "sample_format": "int16",
+        "adc_bits": null,
+        "mv_per_count": 0.005,
+        "leads": 1,
+        "simulated": true
+      }
+    },
+    {
+      "characteristic": "CONTROL",
+      "note": "app -> dispositivo",
+      "bytes": 52,
+      "message": {
+        "v": 1,
+        "type": "cmd",
+        "cmd": "start_stream",
+        "cmd_id": 1
+      }
+    },
+    {
+      "characteristic": "STATUS",
+      "note": "acuse del comando",
+      "bytes": 60,
+      "message": {
+        "v": 1,
+        "type": "cmd_ack",
+        "cmd_id": 1,
+        "ok": true,
+        "error_code": 0
+      }
+    },
+    {
+      "characteristic": "STATUS",
+      "note": "cambio de estado",
+      "bytes": 88,
+      "message": {
+        "v": 1,
+        "type": "status",
+        "state": "streaming",
+        "error_code": 0,
+        "error": "OK",
+        "uptime_ms": 1520
+      }
+    },
+    {
+      "characteristic": "ALERT",
+      "note": "latido ventricular sospechoso",
+      "bytes": 142,
+      "message": {
+        "v": 1,
+        "type": "alert",
+        "event_id": 42,
+        "event": "arrhythmia_suspected",
+        "beat_class": "V",
+        "confidence": 0.91,
+        "sample_index": 123456,
+        "simulated": false
+      }
+    },
+    {
+      "characteristic": "STATUS",
+      "note": "electrodo desconectado",
+      "bytes": 96,
+      "message": {
+        "v": 1,
+        "type": "status",
+        "state": "streaming",
+        "error_code": 10,
+        "error": "LEAD_OFF",
+        "uptime_ms": 60500
+      }
+    },
+    {
+      "characteristic": "ALERT",
+      "note": "electrodo desconectado",
+      "bytes": 128,
+      "message": {
+        "v": 1,
+        "type": "alert",
+        "event_id": 43,
+        "event": "lead_off",
+        "beat_class": "-",
+        "confidence": 0.0,
+        "sample_index": 21780,
+        "simulated": false
+      }
+    },
+    {
+      "characteristic": "CONTROL",
+      "note": "la app confirma que mostro la alerta",
+      "bytes": 63,
+      "message": {
+        "v": 1,
+        "type": "cmd",
+        "cmd": "ack_alert",
+        "cmd_id": 2,
+        "event_id": 42
+      }
+    },
+    {
+      "characteristic": "STATUS",
+      "note": "respuesta a un comando que no se pudo interpretar",
+      "bytes": 63,
+      "message": {
+        "v": 1,
+        "type": "cmd_ack",
+        "cmd_id": -1,
+        "ok": false,
+        "error_code": 40
+      }
+    }
+  ],
+  "ecg_packets": [
+    {
+      "note": "MTU 23 (5 muestras)",
+      "hex": "010100000000000005000c000f0014001f003700",
+      "decoded": {
+        "seq": 0,
+        "first_sample_index": 0,
+        "flags": 0,
+        "samples": [
+          12,
+          15,
+          20,
+          31,
+          55
+        ]
+      }
+    },
+    {
+      "note": "paquete siguiente",
+      "hex": "010101000500000005008c00d2005f00e2fff4ff",
+      "decoded": {
+        "seq": 1,
+        "first_sample_index": 5,
+        "flags": 0,
+        "samples": [
+          140,
+          210,
+          95,
+          -30,
+          -12
+        ]
+      }
+    },
+    {
+      "note": "seq 2-6 perdidos (25 muestras); electrodo desconectado",
+      "hex": "0101070023000000050100000000000000000000",
+      "decoded": {
+        "seq": 7,
+        "first_sample_index": 35,
+        "flags": 1,
+        "samples": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  ]
+}

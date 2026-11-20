@@ -1,0 +1,115 @@
+{
+  "_comment": "Fuente unica de verdad del protocolo BLE. Los valores marcados PROVISIONAL son configurables y deben confirmarse con el hardware real. device-firmware/include/integration_config.h debe coincidir con este archivo (lo verifica communication/tests/test_protocol.py).",
+  "protocol_version": 1,
+  "device": {
+    "name_prefix": "ECG-TINYML",
+    "name_format": "{prefix}-{last4hex}",
+    "_status": "PROVISIONAL"
+  },
+  "gatt": {
+    "_status": "PROVISIONAL - UUID generados aleatoriamente para desarrollo. Sustituir por los definitivos antes de la entrega.",
+    "service_uuid": "61860001-2b45-4f52-a512-0ba5fd3bf0a4",
+    "characteristics": {
+      "ECG_DATA": {
+        "uuid": "61860002-2b45-4f52-a512-0ba5fd3bf0a4",
+        "properties": ["notify"],
+        "encoding": "binary",
+        "char_id": 1
+      },
+      "ALERT": {
+        "uuid": "61860003-2b45-4f52-a512-0ba5fd3bf0a4",
+        "properties": ["notify", "indicate"],
+        "encoding": "json",
+        "char_id": 2
+      },
+      "STATUS": {
+        "uuid": "61860004-2b45-4f52-a512-0ba5fd3bf0a4",
+        "properties": ["read", "notify"],
+        "encoding": "json",
+        "char_id": 3
+      },
+      "DEVICE_INFO": {
+        "uuid": "61860005-2b45-4f52-a512-0ba5fd3bf0a4",
+        "properties": ["read"],
+        "encoding": "json",
+        "char_id": 4
+      },
+      "CONTROL": {
+        "uuid": "61860006-2b45-4f52-a512-0ba5fd3bf0a4",
+        "properties": ["write"],
+        "encoding": "json",
+        "char_id": 5
+      }
+    }
+  },
+  "ecg_packet": {
+    "byte_order": "little-endian",
+    "header_size": 10,
+    "header_layout": [
+      {"field": "protocol_version", "type": "u8", "offset": 0},
+      {"field": "packet_type", "type": "u8", "offset": 1},
+      {"field": "seq", "type": "u16", "offset": 2},
+      {"field": "first_sample_index", "type": "u32", "offset": 4},
+      {"field": "sample_count", "type": "u8", "offset": 8},
+      {"field": "flags", "type": "u8", "offset": 9}
+    ],
+    "packet_types": {"ECG_SAMPLES": 1},
+    "sample_formats": {"int16": 2},
+    "default_sample_format": "int16",
+    "flags": {
+      "LEAD_OFF": 1,
+      "SOURCE_OVERFLOW": 2,
+      "SIMULATED": 4,
+      "SATURATED": 8
+    },
+    "att_overhead": 3,
+    "default_mtu": 23,
+    "max_samples_per_packet": 255
+  },
+  "json_messages": {
+    "max_bytes": 180,
+    "max_bytes_read": 512,
+    "min_mtu_for_json_notify": 185,
+    "_note": "max_bytes aplica a notificaciones y escrituras (ALERT, STATUS, CONTROL), que deben caber en un unico paquete: requieren MTU >= 185. Android debe llamar requestMtu(247); iOS negocia 185 o mas automaticamente. DEVICE_INFO es de lectura y admite long read hasta 512 bytes (limite ATT)."
+  },
+  "commands": ["start_stream", "stop_stream", "ping", "get_status", "ack_alert"],
+  "device_states": ["booting", "advertising", "connected", "streaming", "error"],
+  "error_codes": {
+    "OK": 0,
+    "LEAD_OFF": 10,
+    "SIGNAL_SATURATED": 11,
+    "SIGNAL_NOISY": 12,
+    "SAMPLE_BUFFER_OVERFLOW": 20,
+    "BLE_TX_QUEUE_FULL": 21,
+    "MODEL_NOT_LOADED": 30,
+    "INFERENCE_FAILED": 31,
+    "CONFIG_MISMATCH": 32,
+    "INVALID_COMMAND": 40,
+    "UNSUPPORTED_PROTOCOL_VERSION": 41,
+    "MTU_TOO_SMALL": 42,
+    "LOW_BATTERY": 50
+  },
+  "beat_classes": {
+    "_note": "Clases AAMI EC57. El modelo puede usar un subconjunto; ver ai-model/models/model_info.json.",
+    "N": "Normal / bloqueo de rama",
+    "S": "Ectopico supraventricular",
+    "V": "Ectopico ventricular",
+    "F": "Fusion",
+    "Q": "Desconocido / marcapasos"
+  },
+  "reconnect_policy": {
+    "initial_delay_s": 1.0,
+    "max_delay_s": 30.0,
+    "multiplier": 2.0,
+    "max_attempts": 10,
+    "link_timeout_s": 3.0,
+    "_status": "PROVISIONAL - ajustar tras medir en el dispositivo real"
+  },
+  "stream_defaults": {
+    "_status": "PROVISIONAL - el valor real lo declara el dispositivo en DEVICE_INFO; la app NUNCA debe asumirlo",
+    "sample_rate_hz": 360,
+    "adc_bits": null,
+    "mv_per_count": null,
+    "leads": 1
+  }
+}

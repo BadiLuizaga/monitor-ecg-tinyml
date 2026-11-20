@@ -1,0 +1,10 @@
+# Python 3.11
+numpy>=1.26
+scipy>=1.11
+pandas>=2.1
+wfdb>=4.1
+tensorflow-cpu>=2.16  # en Linux/macOS puede usarse "tensorflow"
+pytest>=8.0
+# Opcional: usa los certificados del sistema para descargar MIT-BIH en redes
+# con inspección TLS (antivirus/proxy). No desactiva la verificación.
+truststore>=0.9

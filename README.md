@@ -25,3 +25,24 @@
 
 ---
 
+
+## 📂 Estructura y estado
+
+| Carpeta | Contenido | Estado |
+|---|---|---|
+| `ai-model/` | Preprocesamiento, entrenamiento, evaluación y exportación TinyML | ✅ Ruta completa ejecutada con MIT-BIH (modelo experimental) |
+| `communication/` | Protocolo BLE v1 y simulador del dispositivo | ✅ Probado (simulación, sin radio real) |
+| `device-firmware/` | Lógica C++ para el ESP32 | ✅ Lógica probada en PC; port a ESP32 pendiente |
+| `mobile-app/` | App Flutter | Responsabilidad de Eva (contrato en `shared/`) |
+| `shared/` | Contrato app ↔ dispositivo y constantes | ✅ |
+| `docs/` | Arquitectura, integración, BLE, modelo, requisitos | ✅ |
+
+Empieza por [`docs/architecture.md`](docs/architecture.md) y [`docs/integration.md`](docs/integration.md).
+
+```sh
+source .tools/env.sh      # entorno local (ver docs/installation.md)
+python -m pytest          # pruebas del modelo, protocolo y simulador
+python communication/simulator/mock_ecg_device.py selftest
+```
+
+> ⚠️ **Proyecto académico.** No es un dispositivo médico ni una herramienta de diagnóstico clínico. Las clasificaciones y alertas son experimentales.

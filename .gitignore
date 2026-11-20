@@ -1,0 +1,23 @@
+# --- Herramientas locales (Python portable, temporales, cachés) ---
+.tools/
+**/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# --- Datos y artefactos del modelo (se regeneran con los scripts) ---
+ai-model/data/raw/
+ai-model/data/processed/
+ai-model/models/*
+!ai-model/models/README.md
+
+# --- Compilación host del firmware ---
+device-firmware/build/
+device-firmware/test/tflm/bin/
+device-firmware/test/tflm/vectors/
+
+# --- Capturas del simulador ---
+communication/simulator/captures/
+
+# --- Varios ---
+.github/modernize/

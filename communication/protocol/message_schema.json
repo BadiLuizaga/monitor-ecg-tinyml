@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "monitor-ecg-tinyml/protocol/v1/message_schema.json",
+  "title": "Mensajes JSON del protocolo BLE Monitor ECG TinyML (v1)",
+  "description": "Mensajes de las caracteristicas DEVICE_INFO, STATUS, ALERT y CONTROL. Las muestras ECG NO van en JSON: usan el paquete binario de ECG_DATA (ver ecg_message.json). Tamano maximo de cada mensaje serializado: 180 bytes (JSON compacto, UTF-8).",
+  "oneOf": [
+    {"$ref": "#/$defs/device_info"},
+    {"$ref": "#/$defs/status"},
+    {"$ref": "#/$defs/alert"},
+    {"$ref": "#/$defs/cmd"},
+    {"$ref": "#/$defs/cmd_ack"}
+  ],
+  "$defs": {
+    "version": {"type": "integer", "const": 1},
+    "error_code": {
+      "type": "integer",
+      "enum": [0, 10, 11, 12, 20, 21, 30, 31, 32, 40, 41, 42, 50],
+      "description": "Ver error_codes en protocol_config.json"
+    },
+    "device_info": {
+      "type": "object",
+      "description": "Caracteristica DEVICE_INFO (read). La app DEBE leerla tras conectar y usar sus valores en lugar de suponer frecuencia o escala.",
+      "required": ["v", "type", "device_id", "fw_version", "hw_model", "sample_rate_hz", "sample_format", "adc_bits", "mv_per_count", "leads", "simulated"],
+      "properties": {
+        "v": {"$ref": "#/$defs/version"},
+        "type": {"const": "device_info"},
+        "device_id": {"type": "string"},
+        "fw_version": {"type": "string"},
+        "hw_model": {"type": "string", "description": "Modelo de placa/sensor. 'TBD' hasta confirmarlo; 'SIMULATOR' en el simulador."},
+        "sample_rate_hz": {"type": "number", "exclusiveMinimum": 0},
+        "sample_format": {"type": "string", "enum": ["int16"]},
+        "adc_bits": {"type": ["integer", "null"], "description": "null mientras no se conozca"},
+        "mv_per_count": {"type": ["number", "null"], "description": "Factor cuentas -> mV. null si no esta calibrado"},
+        "leads": {"type": "integer", "minimum": 1},
+        "simulated": {"type": "boolean"}
+      }
+    },
+    "status": {
+      "type": "object",
+      "description": "Caracteristica STATUS (read/notify): estado y errores del dispositivo.",
+      "required": ["v", "type", "state", "error_code", "error", "uptime_ms"],
+      "properties": {
+        "v": {"$ref": "#/$defs/version"},
+        "type": {"const": "status"},
+        "state": {"type": "string", "enum": ["booting", "advertising", "connected", "streaming", "error"]},
+        "error_code": {"$ref": "#/$defs/error_code"},
+        "error": {"type": "string"},
+        "uptime_ms": {"type": "integer", "minimum": 0},
+        "battery_pct": {"type": ["integer", "null"], "description": "Opcional; solo si el hardware lo permite"}
+      }
+    },
+    "alert": {
+      "type": "object",
+      "description": "Caracteristica ALERT (notify/indicate).",
+      "required": ["v", "type", "event_id", "event", "beat_class", "confidence", "sample_index", "simulated"],
+      "properties": {
+        "v": {"$ref": "#/$defs/version"},
+        "type": {"const": "alert"},
+        "event_id": {"type": "integer", "minimum": 0, "description": "Creciente; permite descartar duplicados y hacer ack_alert"},
+        "event": {"type": "string", "enum": ["arrhythmia_suspected", "lead_off", "signal_quality", "device_error"]},
+        "beat_class": {"type": "string", "enum": ["N", "S", "V", "F", "Q", "-"], "description": "'-' si el evento no es de clasificacion"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "sample_index": {"type": "integer", "minimum": 0, "description": "Indice de muestra (mismo contador que ECG_DATA) del latido que origina la alerta"},
+        "simulated": {"type": "boolean"}
+      }
+    },
+    "cmd": {
+      "type": "object",
+      "description": "Caracteristica CONTROL (write) desde la app.",
+      "required": ["v", "type", "cmd", "cmd_id"],
+      "properties": {
+        "v": {"$ref": "#/$defs/version"},
+        "type": {"const": "cmd"},
+        "cmd": {"type": "string", "enum": ["start_stream", "stop_stream", "ping", "get_status", "ack_alert"]},
+        "cmd_id": {"type": "integer"},
+        "event_id": {"type": "integer", "description": "Solo para ack_alert"}
+      }
+    },
+    "cmd_ack": {
+      "type": "object",
+      "description": "Respuesta a un comando, enviada por STATUS (notify).",
+      "required": ["v", "type", "cmd_id", "ok", "error_code"],
+      "properties": {
+        "v": {"$ref": "#/$defs/version"},
+        "type": {"const": "cmd_ack"},
+        "cmd_id": {"type": "integer", "description": "-1 si el comando no pudo interpretarse"},
+        "ok": {"type": "boolean"},
+        "error_code": {"$ref": "#/$defs/error_code"}
+      }
+    }
+  }
+}

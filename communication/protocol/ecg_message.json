@@ -1,0 +1,75 @@
+{
+  "_description": "Paquete binario de la caracteristica ECG_DATA (notify). NO es JSON: este archivo documenta su formato. Little-endian.",
+  "characteristic": "ECG_DATA",
+  "header_size_bytes": 10,
+  "layout": [
+    {
+      "field": "protocol_version",
+      "type": "u8",
+      "offset": 0
+    },
+    {
+      "field": "packet_type",
+      "type": "u8",
+      "offset": 1
+    },
+    {
+      "field": "seq",
+      "type": "u16",
+      "offset": 2
+    },
+    {
+      "field": "first_sample_index",
+      "type": "u32",
+      "offset": 4
+    },
+    {
+      "field": "sample_count",
+      "type": "u8",
+      "offset": 8
+    },
+    {
+      "field": "flags",
+      "type": "u8",
+      "offset": 9
+    },
+    {
+      "field": "samples",
+      "type": "int16[sample_count]",
+      "offset": 10,
+      "description": "Cuentas del ADC con signo, sin convertir. mV = muestra * mv_per_count (de DEVICE_INFO)."
+    }
+  ],
+  "flags": {
+    "LEAD_OFF": 1,
+    "SOURCE_OVERFLOW": 2,
+    "SIMULATED": 4,
+    "SATURATED": 8
+  },
+  "samples_per_packet_by_mtu": {
+    "23": 5,
+    "185": 86,
+    "247": 117
+  },
+  "rules": [
+    "seq se incrementa en 1 por paquete (modulo 65536); un salto indica paquetes perdidos.",
+    "first_sample_index es el indice absoluto de la primera muestra (modulo 2^32); permite calcular exactamente cuantas muestras se perdieron.",
+    "Tras una reconexion el dispositivo puede reiniciar seq y first_sample_index; la app debe reiniciar su receptor.",
+    "Los paquetes con longitud distinta de header_size + 2*sample_count deben descartarse."
+  ],
+  "example": {
+    "hex": "010102010d0c0b0a03040100feff2c01",
+    "seq": 258,
+    "first_sample_index": 168496141,
+    "sample_count": 3,
+    "flags": 4,
+    "flags_meaning": [
+      "SIMULATED"
+    ],
+    "samples": [
+      1,
+      -2,
+      300
+    ]
+  }
+}

@@ -11,7 +11,8 @@ Qué está listo, qué falta y cómo conectar el software al ESP32 real.
 | Simulador del dispositivo | ✅ Implementado y probado (**simulación**) | `mock_ecg_device.py selftest` |
 | Lógica del firmware (C++) | ✅ Compilada y probada en PC; **sin compilar para ESP32** | `device-firmware/test/host/` |
 | Fuente de señal del firmware | 🔶 Solo simulada (`TestPatternSource`) | — |
-| Transporte BLE del ESP32 | ❌ Pendiente | interfaz `IBleTransport` |
+| Transporte BLE del ESP32 | 🔶 Base portable lista y probada en PC (`QueuedBleTransport`, cola SPSC de `CONTROL`); `Esp32BleTransport` (NimBLE) **pendiente (E2)** | `include/ble_transport.h`, `test/host/` |
+| Proyecto de compilación ESP32 | 🔶 `platformio.ini` preparado (Arduino + NimBLE); **sin placa, sin descargar** | `device-firmware/platformio.ini`, §6 |
 | Adquisición real (ADC/front-end) | ❌ Pendiente de especificaciones | interfaz `IEcgSource`, `hardware_config.h` |
 | Inferencia TFLM en el ESP32 | 🔶 Compilada y ejecutada en PC (T1 no aprobada: ±1 LSB no se cumple; clases 1007/1007). **Sin compilar para ESP32** | `src/inference_tflm.cpp`, `test/tflm/` |
 | App móvil | Contrato definido | `shared/protocol/communication_contract.md` |
@@ -37,7 +38,7 @@ Qué está listo, qué falta y cómo conectar el software al ESP32 real.
 | 8 | Detección de electrodo suelto (lead-off) y sus pines | Flag `LEAD_OFF` y alertas | `ECG_HW_HAS_LEAD_OFF_DETECTION`, pines |
 | 9 | Pines asignados (ADC, lead-off, LED…) | Driver | `hardware_config.h` |
 | 10 | Alimentación (batería o USB) y su capacidad | Intervalo de conexión BLE, `LOW_BATTERY` | — |
-| 11 | Entorno de compilación preferido (Arduino, PlatformIO, ESP-IDF) y su versión | Proyecto de compilación y librerías BLE/TFLM | — |
+| 11 | ~~Entorno de compilación preferido~~ **Decidido (E0): PlatformIO + Arduino + NimBLE** (§6). Falta confirmar que la placa es compatible | Proyecto de compilación y librerías BLE/TFLM | `platformio.ini` |
 | 12 | Frecuencia de la red eléctrica donde se probará (50 o 60 Hz) | Notch | `--notch` |
 | 13 | Una **grabación** de 5–10 min del sensor real (CSV o binario) | Validar el filtro y el detector, y reentrenar con datos reales antes de conectar nada | `ai-model/data/` |
 
@@ -52,12 +53,12 @@ Qué está listo, qué falta y cómo conectar el software al ESP32 real.
    python -m src.export.export_model
    ```
    El firmware se niega a funcionar si las frecuencias no coinciden (`CONFIG_MISMATCH`).
-4. **Crear el proyecto de compilación** en el entorno elegido, con `include/` y `src/` (excepto `main.cpp`, que se adapta).
-5. **Implementar `Esp32BleTransport : IBleTransport`** con NimBLE (recomendado por memoria) o Bluedroid:
+4. **Activar el proyecto PlatformIO** (`device-firmware/platformio.ini`): descomentar `[env:cardioalert]` con el `board` real. Ya excluye `main.cpp`.
+5. **Implementar `Esp32BleTransport : QueuedBleTransport`** con NimBLE-Arduino, en `src/esp32/` (ver §6.3):
    - 5 características según `ble_spec.md`;
    - `notify` debe devolver `false` si la cola está llena;
    - MTU negociado en `mtu()`;
-   - escrituras de `CONTROL` hacia el `ControlHandler`.
+   - el callback `onWrite` de `CONTROL` **solo** llama a `onControlWritten()`; `loop()` llama a `ble.service()` y después a `pipeline.poll()`.
 6. **Validar el BLE con `TestPatternSource`** antes de tocar el sensor (pruebas de `bluetooth_documentation.md`).
 7. **Implementar `HardwareEcgSource : IEcgSource`**, con muestreo por timer o DRDY e interrupción → *ring buffer* → `read()` no bloqueante. Señalizar desbordamientos con `SOURCE_OVERFLOW`.
 8. **Integrar TFLM** (por ejemplo, `esp-tflite-micro`):
@@ -94,3 +95,51 @@ Ver `device-firmware/test/tflm/README.md` |
 - **Derivación distinta de MLII:** la morfología cambia y el rendimiento puede caer. Habrá que reentrenar o ajustar con datos propios.
 - **Front-end ruidoso** (cables, movimiento): el detector de R puede degradarse. Validar con la grabación del punto 13.
 - **Modelo débil en S y F** (ver `model_documentation.md`): por eso solo `V` puede generar alertas, de forma provisional.
+
+## 6. Entorno de compilación: PlatformIO + Arduino + NimBLE (decisión E0)
+
+### 6.1 Decisión
+
+| Elemento | Elección | Motivo |
+|---|---|---|
+| Herramienta | **PlatformIO** | Versiones fijadas por proyecto, `build_src_filter` para excluir `main.cpp` sin duplicar fuentes, core y paquetes reubicables dentro del proyecto |
+| Framework | **Arduino** (sobre ESP-IDF) | Entorno inicial más sencillo; las tres variantes (ESP32, S3, C3) están soportadas. Si más adelante hace falta, el código portable pasa a ESP-IDF sin cambios |
+| Pila BLE | **NimBLE** (NimBLE-Arduino) | Menos RAM y flash que Bluedroid (importante junto con TFLM); disponible en ESP32, S3 y C3; en la versión 2.x `notify()` devuelve `bool` |
+| Placa | **Sin fijar** | No se conoce el modelo físico; no se inventa un board ID ni pines |
+
+### 6.2 Versiones fijadas (sin descargar)
+
+| Dependencia | Versión | Dónde |
+|---|---|---|
+| PlatformIO Core | 6.1.x (fijar la exacta al instalarla, p. ej. `platformio==6.1.16`) | se instala en `.tools/` |
+| Plataforma `espressif32` | **6.9.0** (Arduino-ESP32 2.0.17, ESP-IDF 4.4.7) | `platformio.ini` |
+| `h2zero/NimBLE-Arduino` | **2.1.0** | `platformio.ini` (`lib_deps`) |
+| Estándar C++ | `-std=gnu++17` (el core 2.x usa `gnu++11` por defecto) | `platformio.ini` |
+
+> **No verificado todavía:** en E0 no se descargó nada, así que las versiones no se han resuelto contra el registro. En E2, la primera compilación debe confirmar que resuelven, que `NimBLECharacteristic::notify()` devuelve `bool` y que compila con `gnu++17`. Si alguna falla, se cambia **solo** la versión en `platformio.ini` y se documenta aquí.
+
+**Disco:** todo queda dentro del proyecto, nunca en `C:`.
+- `platformio.ini` fija `core_dir = ../.tools/platformio` (toolchains, plataformas, librerías y caché).
+- La salida de compilación va a `device-firmware/.pio/`, ignorada por git.
+- PlatformIO Core se instala en un entorno virtual dentro de `.tools/`, con `pip --no-cache-dir` y `TMP`/`TEMP` apuntando a `.tools/tmp` (`.tools/env.sh`).
+
+### 6.3 Estructura
+
+```
+device-firmware/
+├── platformio.ini          # sin [env] activo hasta conocer la placa
+├── include/, src/          # código portable (lo compilan PC y PlatformIO; main.cpp excluido)
+│   ├── ble_transport.h/.cpp   # ControlQueue + QueuedBleTransport (E1, probado en PC)
+│   └── main.cpp               # demo de PC; #error con ARDUINO (no lo compila PlatformIO)
+├── src/esp32/              # (E2) Esp32BleTransport + main_esp32.cpp (setup/loop)
+└── test/host, test/tflm    # pruebas de PC con g++ (test_dir de PlatformIO: test/pio)
+```
+
+`Esp32BleTransport` (E2) hereda de `QueuedBleTransport` y solo implementa la parte que depende de NimBLE: `begin()` (servicio, 5 características, nombre en la respuesta al escaneo), `isConnected()`, `mtu()`, `notify()` y `setReadValue()`, y llama a `onControlWritten()` desde el callback `onWrite` de `CONTROL`. El nombre se obtiene con `deviceIdFromMac()` (cuidado: NimBLE entrega los bytes de la dirección al revés).
+
+```cpp
+void loop() {
+  ble.service();               // comandos CONTROL, en el contexto de loop()
+  pipeline.poll(millis());
+}
+```

@@ -27,6 +27,20 @@
 #define ECG_JSON_MAX_READ_BYTES 512
 #define ECG_MIN_MTU_FOR_JSON 185
 
+// Nombre anunciado: "<prefijo>-<id>". En el ESP32 el id son los 4 últimos
+// dígitos hexadecimales de la MAC (deviceIdFromMac); sin hardware se puede
+// pasar un id externo. El nombre va en la respuesta al escaneo, que admite
+// como máximo 29 caracteres.
+#define ECG_DEVICE_ID_MAX_LEN 8
+#define ECG_DEVICE_NAME_MAX_LEN 29
+
+// Cola SPSC de escrituras de CONTROL (callback BLE -> loop()). Potencia de 2.
+// Si está llena, se descarta la escritura NUEVA y la app no recibe cmd_ack.
+#define ECG_CONTROL_QUEUE_SLOTS 4
+
+// Cada cuánto se refresca el valor de lectura de STATUS (uptime_ms).
+#define ECG_STATUS_READ_REFRESH_MS 100
+
 #define ECG_FLAG_LEAD_OFF 1
 #define ECG_FLAG_SOURCE_OVERFLOW 2
 #define ECG_FLAG_SIMULATED 4

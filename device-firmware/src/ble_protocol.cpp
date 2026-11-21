@@ -124,6 +124,25 @@ size_t buildDeviceInfoJson(char* out, size_t capacity, const DeviceInfo& info) {
              mv, info.leads, info.simulated ? "true" : "false");
 }
 
+bool deviceIdFromMac(const uint8_t mac[6], char* out, size_t capacity) {
+  if (mac == nullptr || out == nullptr || capacity < 5) return false;
+  static const char kHex[] = "0123456789ABCDEF";
+  out[0] = kHex[mac[4] >> 4];
+  out[1] = kHex[mac[4] & 0x0F];
+  out[2] = kHex[mac[5] >> 4];
+  out[3] = kHex[mac[5] & 0x0F];
+  out[4] = '\0';
+  return true;
+}
+
+size_t buildDeviceName(char* out, size_t capacity, const char* deviceId) {
+  if (out == nullptr || deviceId == nullptr) return 0;
+  const size_t idLen = std::strlen(deviceId);
+  if (idLen == 0 || idLen > ECG_DEVICE_ID_MAX_LEN) return 0;
+  const size_t n = fmt(out, capacity, "%s-%s", ECG_DEVICE_NAME_PREFIX, deviceId);
+  return n <= ECG_DEVICE_NAME_MAX_LEN ? n : 0;
+}
+
 // Busca "key": y devuelve el puntero al valor (tras espacios) o nullptr.
 static const char* findValue(const char* json, size_t len, const char* key) {
   char pattern[24];
@@ -157,7 +176,8 @@ bool parseCommand(const char* json, size_t len, ParsedCommand* out) {
   *out = ParsedCommand{};
   const char* end = json + len;
   int32_t v = 0;
-  out->versionOk = readInt(findValue(json, len, "v"), end, &v) && v == ECG_PROTOCOL_VERSION;
+  out->hasVersion = readInt(findValue(json, len, "v"), end, &v);
+  out->versionOk = out->hasVersion && v == ECG_PROTOCOL_VERSION;
   const char* type = findValue(json, len, "type");
   if (type == nullptr || static_cast<size_t>(end - type) < 5 || std::memcmp(type, "\"cmd\"", 5) != 0) return false;
   if (!readInt(findValue(json, len, "cmd_id"), end, &out->cmdId)) return false;
@@ -185,6 +205,7 @@ void EcgPacketizer::reset() {
   flags_ = 0;
   seq_ = 0;
   dropped_ = 0;
+  sent_ = 0;
 }
 
 void EcgPacketizer::setMtu(uint16_t mtu) {
@@ -208,7 +229,8 @@ bool EcgPacketizer::flush(IBleTransport& tx) {
   count_ = 0;
   flags_ = 0;
   const bool ok = n > 0 && tx.notify(Characteristic::ECG_DATA, pkt, n);
-  if (!ok) ++dropped_;
+  if (ok) ++sent_;
+  else ++dropped_;
   return ok;
 }
 

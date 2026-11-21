@@ -51,7 +51,7 @@ static_assert(ECG_MODEL_RR_WARMUP_S == ECG_RR_WARMUP_S, "RR: warmup_s");
 #endif
 
 bool EcgPipeline::begin(const char* deviceId) {
-  deviceId_ = deviceId;
+  deviceId_ = deviceId ? deviceId : "";
   const float fs = src_.sampleRateHz();
   before_ = windowBefore(fs);
   after_ = windowAfter(fs);
@@ -65,12 +65,12 @@ bool EcgPipeline::begin(const char* deviceId) {
   // usa otra, hay que regenerarlos (y reentrenar). No se corrige en silencio.
   if (std::fabs(fs - ECG_FILTER_FS_HZ) > 0.01f || before_ + after_ > ECG_BEAT_RING_SIZE / 2 ||
       before_ + after_ > ECG_MAX_BEAT_WINDOW) {
-    error_ = ErrorCode::CONFIG_MISMATCH;
+    error_ = baseError_ = ErrorCode::CONFIG_MISMATCH;
     ok = false;
   }
 #ifdef ECG_MODEL_FS_HZ
   if (std::fabs(fs - ECG_MODEL_FS_HZ) > 0.01f) {
-    error_ = ErrorCode::CONFIG_MISMATCH;
+    error_ = baseError_ = ErrorCode::CONFIG_MISMATCH;
     ok = false;
   }
 #endif
@@ -81,9 +81,11 @@ bool EcgPipeline::begin(const char* deviceId) {
     baseError_ = error_;
   }
 
-  char name[32];
-  std::snprintf(name, sizeof name, "%s-%s", ECG_DEVICE_NAME_PREFIX, deviceId_);
-  ok = ble_.begin(name) && ok;
+  // Nombre "ECG-TINYML-<id>" (ble_spec.md §2). Un id inválido no se trunca en
+  // silencio: no se anuncia y begin() falla.
+  char name[ECG_DEVICE_NAME_MAX_LEN + 1];
+  const bool nameOk = buildDeviceName(name, sizeof name, deviceId_) > 0;
+  ok = nameOk && ble_.begin(name) && ok;
   ble_.setControlHandler(
       [](const uint8_t* d, size_t n, void* ctx) { static_cast<EcgPipeline*>(ctx)->onControlWrite(d, n); }, this);
 
@@ -96,19 +98,30 @@ bool EcgPipeline::begin(const char* deviceId) {
   return ok;
 }
 
-void EcgPipeline::poll(uint32_t nowMs) {
-  nowMs_ = nowMs;
+void EcgPipeline::syncConnection() {
   const bool connected = ble_.isConnected();
-  if (connected && !wasConnected_) {
+  if (connected == wasConnected_) return;
+  wasConnected_ = connected;
+  if (connected) {
     packetizer_.setMtu(ble_.mtu());
     if (state_ != DeviceState::ERROR) setState(DeviceState::CONNECTED);
-  } else if (!connected && wasConnected_) {
+  } else {
     // Pérdida de conexión: se deja de transmitir y se vuelve a anunciar. La
-    // app reconecta con backoff y reinicia su receptor.
+    // app reconecta con backoff y reinicia su receptor. La congestión de la
+    // cola de transmisión era de la conexión anterior.
     packetizer_.reset();
+    statusPending_ = false;
+    txFull_ = false;
+    error_ = currentError();
     if (state_ != DeviceState::ERROR) setState(DeviceState::ADVERTISING);
   }
-  wasConnected_ = connected;
+}
+
+void EcgPipeline::poll(uint32_t nowMs) {
+  nowMs_ = nowMs;
+  syncConnection();
+  if (statusPending_ && wasConnected_) sendStatus();  // reintento tras una notificación fallida
+  if (nowMs_ - lastStatusReadMs_ >= ECG_STATUS_READ_REFRESH_MS) updateStatusReadValue();
   if (state_ == DeviceState::ERROR) return;
 
   // Acota el trabajo por llamada para no bloquear la pila BLE.
@@ -122,8 +135,7 @@ void EcgPipeline::processSample(const EcgSample& s) {
 
   if (s.leadOff != leadOff_) {
     leadOff_ = s.leadOff;
-    error_ = leadOff_ ? ErrorCode::LEAD_OFF : baseError_;
-    sendStatus();
+    refreshError();  // LEAD_OFF tiene la máxima prioridad: siempre cambia y se notifica
     if (leadOff_) sendAlert("lead_off", '-', 0.0f, idx);
     // Igual que simulate_device (Python): se descarta lo pendiente y se
     // reinician los RR en ambos flancos.
@@ -136,8 +148,14 @@ void EcgPipeline::processSample(const EcgSample& s) {
     if (s.leadOff) flags |= ECG_FLAG_LEAD_OFF;
     if (s.saturated) flags |= ECG_FLAG_SATURATED;
     if (src_.isSimulated()) flags |= ECG_FLAG_SIMULATED;
+    const uint32_t sentBefore = packetizer_.sentPackets();
+    const uint32_t droppedBefore = packetizer_.droppedPackets();
     packetizer_.push(ble_, idx, s.value, flags);
     stats_.packetsDropped = packetizer_.droppedPackets();
+    // D3: un paquete no encolado activa BLE_TX_QUEUE_FULL; el primero que sí
+    // se encola lo desactiva. Solo se notifica en las transiciones.
+    if (packetizer_.droppedPackets() != droppedBefore) setTxFull(true);
+    else if (packetizer_.sentPackets() != sentBefore) setTxFull(false);
   }
 
   // Cadena de clasificación (en cuentas de ADC: el z-score elimina la ganancia).
@@ -208,9 +226,10 @@ void EcgPipeline::handleBeat(PendingBeat& e) {
   if (!model_.ready()) return;
   InferenceResult res;
   if (!model_.classify(e.window, len, b.features, model_.rrFeatures(), &res)) {
-    error_ = ErrorCode::INFERENCE_FAILED;
+    setInferenceFailed(true);  // D5: se refleja en STATUS
     return;
   }
+  setInferenceFailed(false);  // error transitorio: se borra con la siguiente inferencia correcta
   ++stats_.beatsClassified;
   if (e.timeout) ++stats_.beatsByTimeout;
   if (!b.warm) return;  // calentamiento RR: se clasifica, pero no se alerta
@@ -219,10 +238,18 @@ void EcgPipeline::handleBeat(PendingBeat& e) {
 }
 
 void EcgPipeline::onControlWrite(const uint8_t* data, size_t len) {
+  // Un comando puede llegar (vía service()) antes de que poll() vea la
+  // conexión: se sincroniza primero para no perder la transición.
+  syncConnection();
+  if (!wasConnected_) return;  // sin conexión no hay escrituras (igual que el simulador)
   ParsedCommand c;
   const bool valid = parseCommand(reinterpret_cast<const char*>(data), len, &c);
   if (!valid) {
-    sendAck(c.cmdId, false, c.versionOk ? ErrorCode::INVALID_COMMAND : ErrorCode::UNSUPPORTED_PROTOCOL_VERSION);
+    // Versión presente y distinta de la soportada -> UNSUPPORTED_PROTOCOL_VERSION
+    // (ble_spec.md §8). Cualquier otro mensaje no interpretable (sin "v",
+    // vacío, demasiado largo, comando desconocido) -> INVALID_COMMAND.
+    const bool badVersion = c.hasVersion && !c.versionOk;
+    sendAck(c.cmdId, false, badVersion ? ErrorCode::UNSUPPORTED_PROTOCOL_VERSION : ErrorCode::INVALID_COMMAND);
     return;
   }
   switch (c.cmd) {
@@ -236,6 +263,8 @@ void EcgPipeline::onControlWrite(const uint8_t* data, size_t len) {
       break;
     case Command::STOP_STREAM:
       packetizer_.flush(ble_);
+      txFull_ = false;  // sin stream no hay paquetes que puedan despejarlo
+      error_ = currentError();
       setState(DeviceState::CONNECTED);
       break;
     case Command::GET_STATUS:
@@ -254,18 +283,64 @@ void EcgPipeline::setState(DeviceState s) {
   sendStatus();
 }
 
+ErrorCode EcgPipeline::currentError() const {
+  if (leadOff_) return ErrorCode::LEAD_OFF;
+  if (txFull_) return ErrorCode::BLE_TX_QUEUE_FULL;
+  if (inferenceFailed_) return ErrorCode::INFERENCE_FAILED;
+  return baseError_;
+}
+
+void EcgPipeline::refreshError() {
+  const ErrorCode e = currentError();
+  if (e == error_) return;
+  error_ = e;
+  sendStatus();
+}
+
+void EcgPipeline::setTxFull(bool full) {
+  if (txFull_ == full) return;
+  txFull_ = full;
+  refreshError();
+}
+
+void EcgPipeline::setInferenceFailed(bool failed) {
+  if (inferenceFailed_ == failed) return;
+  inferenceFailed_ = failed;
+  refreshError();
+}
+
+void EcgPipeline::updateStatusReadValue() {
+  // D6: el valor de lectura de STATUS se refresca cada ECG_STATUS_READ_REFRESH_MS
+  // para que uptime_ms no quede congelado en la última notificación.
+  char buf[ECG_JSON_MAX_BYTES + 1];
+  const size_t n = buildStatusJson(buf, sizeof buf, state_, error_, nowMs_);
+  if (n) ble_.setReadValue(Characteristic::STATUS, reinterpret_cast<const uint8_t*>(buf), n);
+  lastStatusReadMs_ = nowMs_;
+}
+
 void EcgPipeline::sendStatus() {
   char buf[ECG_JSON_MAX_BYTES + 1];
   const size_t n = buildStatusJson(buf, sizeof buf, state_, error_, nowMs_);
+  if (n == 0) return;
   ble_.setReadValue(Characteristic::STATUS, reinterpret_cast<const uint8_t*>(buf), n);
-  if (ble_.isConnected()) ble_.notify(Characteristic::STATUS, reinterpret_cast<const uint8_t*>(buf), n);
+  lastStatusReadMs_ = nowMs_;
+  if (!ble_.isConnected()) return;
+  // Si la cola está llena (justo cuando se informa BLE_TX_QUEUE_FULL), el
+  // STATUS se reintenta en el siguiente poll() con el estado de ese momento.
+  statusPending_ = !ble_.notify(Characteristic::STATUS, reinterpret_cast<const uint8_t*>(buf), n);
 }
 
 void EcgPipeline::sendAlert(const char* event, char beatClass, float conf, uint32_t index) {
   if (!ble_.isConnected()) return;
   char buf[ECG_JSON_MAX_BYTES + 1];
   const size_t n = buildAlertJson(buf, sizeof buf, ++eventId_, event, beatClass, conf, index, src_.isSimulated());
-  if (n && ble_.notify(Characteristic::ALERT, reinterpret_cast<const uint8_t*>(buf), n)) ++stats_.alertsSent;
+  if (n == 0) return;
+  if (ble_.notify(Characteristic::ALERT, reinterpret_cast<const uint8_t*>(buf), n)) {
+    ++stats_.alertsSent;
+    setTxFull(false);
+  } else {
+    setTxFull(true);  // D3: la alerta no pudo encolarse
+  }
 }
 
 void EcgPipeline::sendAck(int32_t cmdId, bool ok, ErrorCode err) {

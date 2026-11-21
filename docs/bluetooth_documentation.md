@@ -14,6 +14,8 @@ Resumen del protocolo. **La especificación normativa es [`communication/ble/ble
 | `DEVICE_INFO` como lectura | Admite hasta 512 B con *long read* y solo se lee una vez |
 | Comandos con `cmd_id` y acuse (`cmd_ack`) | La app sabe si cada orden se aplicó y por qué falló |
 | Backoff exponencial en la reconexión | No saturar la radio ni la batería si el dispositivo está lejos o apagado |
+| **NimBLE** como pila BLE, con PlatformIO + Arduino (E0) | Menos RAM que Bluedroid; disponible en ESP32, S3 y C3; ver `docs/integration.md` §6 |
+| Comandos `CONTROL` por una **cola SPSC** procesada en `loop()` (E1) | La pila BLE entrega las escrituras en su propia tarea y el pipeline no es thread-safe: el callback solo copia y `service()` las entrega |
 
 ## Estado
 
@@ -24,7 +26,8 @@ Resumen del protocolo. **La especificación normativa es [`communication/ble/ble
 | Códec Python, receptor y reconexión | ✅ Probados (pytest) |
 | Simulador (memoria, archivo, TCP) | ✅ Probado. **No es BLE real** |
 | Códec C++ del firmware | ✅ Probado en PC (bytes y JSON idénticos a Python) |
-| Transporte BLE del ESP32 (NimBLE/Bluedroid) | ❌ Pendiente |
+| Base del transporte (`QueuedBleTransport`, cola de `CONTROL`) | ✅ Probada en PC |
+| Transporte BLE del ESP32 (`Esp32BleTransport`, NimBLE) | ❌ Pendiente (E2) |
 | Prueba sobre radio real (ESP32 ↔ teléfono) | ❌ Pendiente del hardware |
 
 ## Pruebas cuando llegue el ESP32

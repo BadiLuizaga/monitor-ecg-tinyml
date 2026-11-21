@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ble_protocol.h"
+#include "ble_transport.h"
 #include "ecg_pipeline.h"
 #include "hardware_config.h"
 #include "signal_processing.h"
@@ -36,37 +37,59 @@ static std::string hex(const uint8_t* d, size_t n) {
   return s;
 }
 
-class MockTransport : public IBleTransport {
+// Transporte simulado sobre QueuedBleTransport: las escrituras de CONTROL
+// pasan por la misma cola SPSC que usará Esp32BleTransport.
+class MockTransport : public QueuedBleTransport {
  public:
-  bool begin(const char*) override { return true; }
+  bool begin(const char* name) override {
+    advertisedName = name;
+    return true;
+  }
   bool isConnected() const override { return connected; }
   uint16_t mtu() const override { return mtuValue; }
+  // Solo se registra lo ENTREGADO; con failNotify la "cola de la pila" está llena.
   bool notify(Characteristic c, const uint8_t* d, size_t n) override {
+    ++notifyAttempts;
+    if (inStackCallback) ++notifiesInsideCallback;
+    if (failNotify) return false;
     if (c == Characteristic::ECG_DATA) packets.emplace_back(d, d + n);
     else json.emplace_back(reinterpret_cast<const char*>(d), n);
-    return !failNotify;
+    return true;
   }
   void setReadValue(Characteristic c, const uint8_t* d, size_t n) override {
     if (c == Characteristic::DEVICE_INFO) deviceInfo.assign(reinterpret_cast<const char*>(d), n);
+    if (c == Characteristic::STATUS) statusRead.assign(reinterpret_cast<const char*>(d), n);
   }
-  void setControlHandler(ControlHandler h, void* ctx) override {
-    handler = h;
-    handlerCtx = ctx;
+  // Lo que haría el callback onWrite de la pila BLE: solo encolar.
+  bool stackWrite(const char* s) { return stackWrite(reinterpret_cast<const uint8_t*>(s), std::strlen(s)); }
+  bool stackWrite(const uint8_t* d, size_t n) {
+    inStackCallback = true;
+    const bool ok = onControlWritten(d, n);
+    inStackCallback = false;
+    return ok;
   }
-  void write(const char* s) { handler(reinterpret_cast<const uint8_t*>(s), std::strlen(s), handlerCtx); }
+  // Escritura + service() inmediato (lo que ocurre en un loop() completo).
+  void write(const char* s) {
+    stackWrite(s);
+    service();
+  }
   bool has(const char* needle) const {
     for (const auto& j : json)
       if (j.find(needle) != std::string::npos) return true;
     return false;
   }
+  size_t count(const char* needle) const {
+    size_t k = 0;
+    for (const auto& j : json) k += j.find(needle) != std::string::npos;
+    return k;
+  }
 
-  bool connected = false, failNotify = false;
+  bool connected = false, failNotify = false, inStackCallback = false;
   uint16_t mtuValue = 247;
+  unsigned notifyAttempts = 0, notifiesInsideCallback = 0;
   std::vector<std::vector<uint8_t>> packets;
   std::vector<std::string> json;
-  std::string deviceInfo;
-  ControlHandler handler = nullptr;
-  void* handlerCtx = nullptr;
+  std::string deviceInfo, statusRead, advertisedName;
 };
 
 // Igual que communication/tests/test_protocol.py::test_packet_golden_bytes
@@ -123,10 +146,222 @@ static void testParseCommand() {
   const char* spaced = "{ \"v\" : 1, \"type\" : \"cmd\", \"cmd\" : \"ping\", \"cmd_id\" : 3 }";
   CHECK(parseCommand(spaced, std::strlen(spaced), &c) && c.cmd == Command::PING);
   const char* badv = "{\"v\":2,\"type\":\"cmd\",\"cmd\":\"ping\",\"cmd_id\":3}";
-  CHECK(!parseCommand(badv, std::strlen(badv), &c) && !c.versionOk);
+  CHECK(!parseCommand(badv, std::strlen(badv), &c) && c.hasVersion && !c.versionOk);
   const char* unknown = "{\"v\":1,\"type\":\"cmd\",\"cmd\":\"format\",\"cmd_id\":3}";
   CHECK(!parseCommand(unknown, std::strlen(unknown), &c) && c.versionOk);
-  CHECK(!parseCommand("basura", 6, &c));
+  CHECK(!parseCommand("basura", 6, &c) && !c.hasVersion);
+  CHECK(!parseCommand("", 0, &c) && !c.hasVersion && c.cmdId == -1);
+}
+
+static void testDeviceName() {
+  std::printf("nombre del dispositivo (MAC / id externo)\n");
+  const uint8_t mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};  // orden de visualización
+  char id[5];
+  CHECK(deviceIdFromMac(mac, id, sizeof id) && std::string(id) == "EEFF");
+  const uint8_t mac2[6] = {0, 0, 0, 0, 0x0a, 0x1b};
+  CHECK(deviceIdFromMac(mac2, id, sizeof id) && std::string(id) == "0A1B");
+  char tiny[4];
+  CHECK(!deviceIdFromMac(mac, tiny, sizeof tiny));
+  char name[ECG_DEVICE_NAME_MAX_LEN + 1];
+  CHECK(buildDeviceName(name, sizeof name, "EEFF") == 15 && std::string(name) == "ECG-TINYML-EEFF");
+  CHECK(buildDeviceName(name, sizeof name, "DEMO") > 0);           // id externo (sin hardware)
+  CHECK(buildDeviceName(name, sizeof name, "") == 0);
+  CHECK(buildDeviceName(name, sizeof name, nullptr) == 0);
+  CHECK(buildDeviceName(name, sizeof name, "123456789") == 0);     // > ECG_DEVICE_ID_MAX_LEN
+  CHECK(buildDeviceName(name, 10, "EEFF") == 0);                   // no cabe
+
+  TestPatternSource src(ECG_HW_SAMPLE_RATE_HZ, 75.0f, 1);
+  MockTransport ble;
+  StubInferenceEngine model(0);
+  EcgPipeline p(src, ble, model);
+  CHECK(p.begin(id));  // id derivado de una MAC (aquí, de prueba)
+  CHECK(ble.advertisedName == "ECG-TINYML-0A1B");
+  CHECK(ble.deviceInfo.find("\"device_id\":\"0A1B\"") != std::string::npos);
+
+  MockTransport ble2;
+  EcgPipeline p2(src, ble2, model);
+  CHECK(!p2.begin("") && p2.state() == DeviceState::ERROR && ble2.advertisedName.empty());  // no se anuncia
+}
+
+static void testControlQueue() {
+  std::printf("cola SPSC de CONTROL (%u huecos)\n", static_cast<unsigned>(ControlQueue::kSlots));
+  ControlQueue q;
+  uint8_t out[ControlQueue::kMaxLen];
+  size_t len = 0;
+  bool big = false;
+  CHECK(q.empty() && !q.pop(out, &len, &big));
+  for (size_t i = 0; i < ControlQueue::kSlots; ++i) {
+    const uint8_t b[2] = {static_cast<uint8_t>(i), 0x55};
+    CHECK(q.push(b, sizeof b));
+  }
+  const uint8_t extra[1] = {0xEE};
+  CHECK(!q.push(extra, 1) && q.droppedFull() == 1);  // llena: se descarta la NUEVA
+  CHECK(q.size() == ControlQueue::kSlots);
+  for (size_t i = 0; i < ControlQueue::kSlots; ++i) {  // FIFO
+    CHECK(q.pop(out, &len, &big) && len == 2 && !big && out[0] == i && out[1] == 0x55);
+  }
+  CHECK(q.empty());
+
+  std::vector<uint8_t> huge(ControlQueue::kMaxLen + 1, '{');
+  CHECK(q.push(huge.data(), huge.size()) && q.oversize() == 1);
+  CHECK(q.pop(out, &len, &big) && big && len == 0);
+  std::vector<uint8_t> exact(ControlQueue::kMaxLen, 'x');  // 180 B: se admite
+  CHECK(q.push(exact.data(), exact.size()) && q.pop(out, &len, &big) && !big && len == ControlQueue::kMaxLen);
+
+  // Vuelta completa de los índices y clear() desde el consumidor.
+  bool fifo = true;
+  for (uint32_t i = 0; i < 1000; ++i) {
+    const uint8_t b[1] = {static_cast<uint8_t>(i)};
+    q.push(b, 1);
+    fifo = fifo && q.pop(out, &len, &big) && len == 1 && out[0] == static_cast<uint8_t>(i);
+  }
+  CHECK(fifo);
+  q.push(extra, 1);
+  q.push(extra, 1);
+  q.clear();
+  CHECK(q.empty() && !q.pop(out, &len, &big));
+}
+
+static const char* kStart = "{\"v\":1,\"type\":\"cmd\",\"cmd\":\"start_stream\",\"cmd_id\":1}";
+
+static void testDeferredControl() {
+  std::printf("CONTROL diferido: callback -> cola -> service() -> pipeline\n");
+  TestPatternSource src(ECG_HW_SAMPLE_RATE_HZ, 75.0f, 5);
+  MockTransport ble;
+  StubInferenceEngine model(0);
+  EcgPipeline p(src, ble, model);
+  CHECK(p.begin("TEST"));
+  ble.connected = true;
+  p.poll(0);
+  CHECK(p.state() == DeviceState::CONNECTED);
+
+  // 1. El callback solo encola: ni cambia el estado ni responde nada.
+  const size_t before = ble.json.size();
+  const unsigned attempts = ble.notifyAttempts;
+  CHECK(ble.stackWrite(kStart));
+  CHECK(p.state() == DeviceState::CONNECTED);
+  CHECK(ble.json.size() == before && ble.notifyAttempts == attempts && ble.notifiesInsideCallback == 0);
+  CHECK(ble.controlQueue().size() == 1);
+  // 2. service() (desde loop()) entrega el comando.
+  CHECK(ble.service() == 1 && !ble.dispatching());
+  CHECK(p.state() == DeviceState::STREAMING && ble.has("\"cmd_id\":1,\"ok\":true"));
+  CHECK(ble.notifiesInsideCallback == 0);
+
+  // 3. Cola llena: se procesan los 4 primeros en orden; el 5.º se pierde sin acuse.
+  for (int i = 10; i < 10 + static_cast<int>(ControlQueue::kSlots) + 1; ++i) {
+    char cmd[80];
+    std::snprintf(cmd, sizeof cmd, "{\"v\":1,\"type\":\"cmd\",\"cmd\":\"ping\",\"cmd_id\":%d}", i);
+    const bool queued = ble.stackWrite(cmd);
+    CHECK(queued == (i < 10 + static_cast<int>(ControlQueue::kSlots)));
+  }
+  CHECK(ble.controlQueue().droppedFull() == 1);
+  CHECK(ble.service(2) == 2);  // service() respeta el máximo por llamada
+  CHECK(ble.service() == ControlQueue::kSlots - 2);
+  size_t last = 0;
+  bool ordered = true;
+  for (int i = 10; i < 10 + static_cast<int>(ControlQueue::kSlots); ++i) {
+    char ack[40];
+    std::snprintf(ack, sizeof ack, "\"cmd_id\":%d,\"ok\":true", i);
+    size_t at = 0;
+    for (; at < ble.json.size() && ble.json[at].find(ack) == std::string::npos; ++at) {
+    }
+    ordered = ordered && at < ble.json.size() && at >= last;
+    last = at;
+  }
+  CHECK(ordered);
+  CHECK(!ble.has("\"cmd_id\":14"));
+
+  // 4. Errores de interpretación coherentes con ble_spec.md (§5.4, §8).
+  ble.write("basura");
+  CHECK(ble.has("{\"v\":1,\"type\":\"cmd_ack\",\"cmd_id\":-1,\"ok\":false,\"error_code\":40}"));
+  ble.json.clear();
+  ble.write("{\"v\":2,\"type\":\"cmd\",\"cmd\":\"ping\",\"cmd_id\":5}");
+  CHECK(ble.has("\"cmd_id\":5,\"ok\":false,\"error_code\":41"));
+  ble.json.clear();
+  std::string huge = "{\"v\":1,\"type\":\"cmd\",\"cmd\":\"ping\",\"cmd_id\":6,\"pad\":\"";
+  huge += std::string(200, 'x') + "\"}";
+  ble.stackWrite(reinterpret_cast<const uint8_t*>(huge.data()), huge.size());
+  ble.service();
+  CHECK(ble.has("\"cmd_id\":-1,\"ok\":false,\"error_code\":40") && !ble.has("\"cmd_id\":6"));
+
+  // 5. Sin conexión, las escrituras se ignoran (sin acuse, sin cambio de estado).
+  ble.connected = false;
+  p.poll(1000);
+  CHECK(p.state() == DeviceState::ADVERTISING);
+  ble.json.clear();
+  ble.write(kStart);
+  CHECK(ble.json.empty() && p.state() == DeviceState::ADVERTISING);
+
+  // 6. Un comando que llega antes de que poll() vea la conexión no se pierde.
+  ble.connected = true;
+  ble.write(kStart);
+  CHECK(p.state() == DeviceState::STREAMING);
+  p.poll(1100);
+  CHECK(p.state() == DeviceState::STREAMING);
+  CHECK(ble.notifiesInsideCallback == 0);
+}
+
+static void testTxQueueFull() {
+  std::printf("D3 BLE_TX_QUEUE_FULL\n");
+  TestPatternSource src(ECG_HW_SAMPLE_RATE_HZ, 75.0f, 9);
+  MockTransport ble;
+  StubInferenceEngine model(0);
+  EcgPipeline p(src, ble, model);
+  CHECK(p.begin("TEST"));
+  ble.connected = true;
+  p.poll(0);
+  ble.write(kStart);
+  CHECK(p.state() == DeviceState::STREAMING);
+  for (int i = 0; i < 5; ++i) p.poll(10 + i);
+  CHECK(p.error() == ErrorCode::MODEL_NOT_LOADED && !ble.has("\"error_code\":21"));
+
+  ble.failNotify = true;  // la cola de la pila se llena
+  for (int i = 0; i < 5; ++i) p.poll(20 + i);
+  CHECK(p.error() == ErrorCode::BLE_TX_QUEUE_FULL);
+  CHECK(p.stats().packetsDropped > 0);
+  CHECK(ble.statusRead.find("\"error_code\":21") != std::string::npos);  // visible por lectura
+
+  ble.failNotify = false;  // se libera: el STATUS pendiente se reintenta y luego se despeja
+  for (int i = 0; i < 5; ++i) p.poll(30 + i);
+  CHECK(p.error() == ErrorCode::MODEL_NOT_LOADED);
+  size_t full = ble.json.size(), cleared = ble.json.size();
+  for (size_t k = 0; k < ble.json.size(); ++k) {
+    if (ble.json[k].find("\"error_code\":21,\"error\":\"BLE_TX_QUEUE_FULL\"") != std::string::npos && full == ble.json.size())
+      full = k;
+    if (full < k && ble.json[k].find("\"type\":\"status\"") != std::string::npos &&
+        ble.json[k].find("\"error_code\":30") != std::string::npos)
+      cleared = k;
+  }
+  CHECK(full < ble.json.size() && cleared < ble.json.size());  // se notificó y luego se despejó
+  CHECK(ble.count("\"error_code\":21,\"error\"") == 1);          // una sola notificación entregada
+
+  // Al desconectar, la congestión de la conexión anterior se olvida.
+  ble.failNotify = true;
+  for (int i = 0; i < 3; ++i) p.poll(40 + i);
+  CHECK(p.error() == ErrorCode::BLE_TX_QUEUE_FULL);
+  ble.failNotify = false;
+  ble.connected = false;
+  p.poll(50);
+  CHECK(p.state() == DeviceState::ADVERTISING && p.error() == ErrorCode::MODEL_NOT_LOADED);
+}
+
+static void testStatusReadUptime() {
+  std::printf("D6 uptime_ms en la lectura de STATUS\n");
+  TestPatternSource src(ECG_HW_SAMPLE_RATE_HZ, 75.0f, 2);
+  MockTransport ble;
+  StubInferenceEngine model(0);
+  EcgPipeline p(src, ble, model);
+  CHECK(p.begin("TEST"));
+  p.poll(0);
+  CHECK(ble.statusRead.find("\"uptime_ms\":0") != std::string::npos);
+  p.poll(ECG_STATUS_READ_REFRESH_MS - 1);  // todavía no toca refrescar
+  CHECK(ble.statusRead.find("\"uptime_ms\":0") != std::string::npos);
+  p.poll(250);
+  CHECK(ble.statusRead.find("\"uptime_ms\":250") != std::string::npos);
+  p.poll(60000);  // sin conexión ni cambios de estado, también se actualiza
+  CHECK(ble.statusRead.find("\"uptime_ms\":60000") != std::string::npos);
+  CHECK(ble.statusRead.find("\"state\":\"advertising\"") != std::string::npos);
+  CHECK(ble.json.empty());  // refrescar la lectura no genera notificaciones
 }
 
 #include "generated/preprocessing_coeffs.h"
@@ -376,16 +611,70 @@ static void testPipelineRrParity() {
   CHECK(alertsChecked == arrhythmiaAlerts && alertsInWarmup == 0);
 }
 
+// Motor que falla en las primeras inferencias y luego funciona.
+class FlakyEngine : public IInferenceEngine {
+ public:
+  bool begin() override { return true; }
+  bool ready() const override { return true; }
+  size_t inputLength() const override { return 252; }
+  size_t rrFeatures() const override { return ECG_RR_NUM_FEATURES; }
+  bool classify(const float*, size_t, const float*, size_t, InferenceResult* out) override {
+    if (++calls <= failFirst) return false;
+    out->classIndex = 0;
+    out->beatClass = 'N';
+    out->confidence = 0.99f;
+    return true;
+  }
+  unsigned calls = 0, failFirst = 3;
+};
+
+static void testInferenceFailedStatus() {
+  std::printf("D5 INFERENCE_FAILED en STATUS\n");
+  VectorSource src;
+  MockTransport ble;
+  FlakyEngine model;
+  EcgPipeline p(src, ble, model);
+  CHECK(p.begin("D5"));
+  CHECK(p.error() == ErrorCode::OK);
+  ble.connected = true;
+  bool sawFailed = false;
+  for (unsigned t = 0; src.pos < TV_C3_INPUT_LEN; ++t) {
+    p.poll(t);
+    sawFailed = sawFailed || p.error() == ErrorCode::INFERENCE_FAILED;
+  }
+  CHECK(model.calls > model.failFirst);
+  CHECK(sawFailed);
+  CHECK(ble.count("\"error_code\":31,\"error\":\"INFERENCE_FAILED\"") == 1);  // una notificación, no una por latido
+  CHECK(p.error() == ErrorCode::OK);                                          // se despeja con la siguiente inferencia correcta
+  CHECK(p.stats().beatsClassified == model.calls - model.failFirst);
+  // Tras el fallo hay un STATUS con OK posterior.
+  size_t failedAt = ble.json.size();
+  bool okAfter = false;
+  for (size_t k = 0; k < ble.json.size(); ++k) {
+    if (ble.json[k].find("\"error_code\":31") != std::string::npos) failedAt = k;
+    if (k > failedAt && ble.json[k].find("\"type\":\"status\"") != std::string::npos &&
+        ble.json[k].find("\"error_code\":0") != std::string::npos)
+      okAfter = true;
+  }
+  CHECK(okAfter);
+}
+
 int main() {
   testGoldenPacket();
   testMtu();
   testJson();
   testParseCommand();
+  testDeviceName();
+  testControlQueue();
   testFilterAndDetectorParity();
   testPipeline();
+  testDeferredControl();
+  testTxQueueFull();
+  testStatusReadUptime();
   testRrTrackerParity();
   testQuantizationParity();
   testPipelineRrParity();
+  testInferenceFailedStatus();
   std::printf(g_failures ? "\n%d FALLOS\n" : "\nTODAS LAS PRUEBAS HOST OK\n", g_failures);
   return g_failures ? 1 : 0;
 }

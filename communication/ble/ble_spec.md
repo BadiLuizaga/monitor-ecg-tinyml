@@ -115,6 +115,12 @@ Comandos disponibles: `start_stream`, `stop_stream`, `ping`, `get_status` y `ack
 
 Cada comando recibe un `cmd_ack` por `STATUS`. Si el comando no pudo interpretarse, el acuse lleva `cmd_id = -1`.
 
+Comportamiento del dispositivo (firmware C++; aclaraciones, sin cambios de formato):
+
+- `v` presente y distinto de 1 → `UNSUPPORTED_PROTOCOL_VERSION` (41). Cualquier otro mensaje no interpretable (sin `v`, JSON inválido, comando desconocido o escritura de **más de 180 bytes**) → `INVALID_COMMAND` (40).
+- Las escrituras se encolan (4 como máximo) y se procesan fuera del contexto de la pila BLE. Si la cola está llena, la escritura se descarta **sin acuse**: la app debe tratar la falta de `cmd_ack` como un *timeout* y reintentar.
+- Sin conexión, las escrituras se ignoran.
+
 ## 6. Códigos de error
 
 | Código | Nombre | Significado |
@@ -132,6 +138,12 @@ Cada comando recibe un `cmd_ack` por `STATUS`. Si el comando no pudo interpretar
 | 41 | `UNSUPPORTED_PROTOCOL_VERSION` | Versión del protocolo no soportada |
 | 42 | `MTU_TOO_SMALL` | Se rechaza `start_stream` porque el MTU es menor que 185 |
 | 50 | `LOW_BATTERY` | Batería baja, solo si el hardware lo permite |
+
+`STATUS` informa un único `error_code`, elegido por prioridad: `LEAD_OFF` > `BLE_TX_QUEUE_FULL` > `INFERENCE_FAILED` > errores persistentes (`MODEL_NOT_LOADED`, `CONFIG_MISMATCH`) > `OK`. Se notifica solo cuando cambia.
+
+- `BLE_TX_QUEUE_FULL`: se activa cuando un paquete `ECG_DATA` o una `ALERT` no pudo encolarse y se despeja con el siguiente envío correcto, con `stop_stream` o al desconectar. Las muestras perdidas se detectan, como siempre, por `seq` y `first_sample_index`.
+- `INFERENCE_FAILED`: se activa al fallar una inferencia y se despeja con la siguiente correcta.
+- La **lectura** de `STATUS` se actualiza al menos cada 100 ms, así que `uptime_ms` es actual.
 
 ## 7. Conexión, desconexión y reconexión
 

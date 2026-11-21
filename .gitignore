@@ -16,6 +16,9 @@ device-firmware/build/
 device-firmware/test/tflm/bin/
 device-firmware/test/tflm/vectors/
 
+# --- PlatformIO (salida de compilación; el core va en .tools/platformio) ---
+device-firmware/.pio/
+
 # --- Capturas del simulador ---
 communication/simulator/captures/
 

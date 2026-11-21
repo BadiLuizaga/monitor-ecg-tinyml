@@ -62,11 +62,23 @@ struct DeviceInfo {
 };
 size_t buildDeviceInfoJson(char* out, size_t capacity, const DeviceInfo& info);
 
+// Identificador del dispositivo a partir de la MAC BLE (ble_spec.md §2): los 4
+// últimos dígitos hexadecimales, en mayúsculas. `mac` va en orden de
+// visualización (mac[0] es el byte más significativo, AA en AA:BB:CC:DD:EE:FF
+// -> "EEFF"). OJO: algunas pilas (NimBLE getNative()) entregan los bytes al
+// revés. Escribe 4 caracteres + '\0'; devuelve false si `out` no cabe.
+bool deviceIdFromMac(const uint8_t mac[6], char* out, size_t capacity);
+
+// "<ECG_DEVICE_NAME_PREFIX>-<deviceId>". Devuelve la longitud o 0 si el id está
+// vacío, supera ECG_DEVICE_ID_MAX_LEN o el nombre no cabe en `capacity`.
+size_t buildDeviceName(char* out, size_t capacity, const char* deviceId);
+
 struct ParsedCommand {
   Command cmd = Command::UNKNOWN;
   int32_t cmdId = -1;
   int32_t eventId = -1;
-  bool versionOk = false;
+  bool hasVersion = false;  // el mensaje trae un campo "v" entero
+  bool versionOk = false;   // ... y vale ECG_PROTOCOL_VERSION
 };
 
 // Parser mínimo para los comandos de CONTROL (no es un parser JSON general:
@@ -74,7 +86,13 @@ struct ParsedCommand {
 // mensaje no es un comando válido.
 bool parseCommand(const char* json, size_t len, ParsedCommand* out);
 
-// Interfaz hacia la pila BLE concreta (NimBLE/Bluedroid en ESP32, mock en pruebas).
+// Interfaz hacia la pila BLE concreta (NimBLE en ESP32, mock en pruebas).
+//
+// Contrato para las implementaciones (ver QueuedBleTransport, ble_transport.h):
+// * notify() devuelve false si no se pudo encolar (sin memoria o cola llena).
+// * El ControlHandler se invoca SIEMPRE desde el mismo contexto que
+//   EcgPipeline::poll() (loop()), nunca desde el callback de la pila BLE.
+// * setReadValue() debe ser seguro frente a lecturas concurrentes de la pila.
 class IBleTransport {
  public:
   using ControlHandler = void (*)(const uint8_t* data, size_t len, void* ctx);
@@ -98,6 +116,7 @@ class EcgPacketizer {
   bool flush(IBleTransport& tx);
   uint16_t seq() const { return seq_; }
   uint32_t droppedPackets() const { return dropped_; }
+  uint32_t sentPackets() const { return sent_; }
 
  private:
   int16_t buf_[ECG_MAX_SAMPLES_PER_PACKET] = {};
@@ -107,6 +126,7 @@ class EcgPacketizer {
   uint16_t seq_ = 0;
   uint32_t firstIndex_ = 0;
   uint32_t dropped_ = 0;
+  uint32_t sent_ = 0;
 };
 
 }  // namespace ecg

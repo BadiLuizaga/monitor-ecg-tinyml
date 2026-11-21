@@ -13,14 +13,14 @@ mkdir -p "$FW/build"
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror \
   -I"$FW/include" -I"$FW/build" \
   "$FW/test/host/test_host.cpp" \
-  "$FW/src/ble_protocol.cpp" "$FW/src/signal_processing.cpp" "$FW/src/alert_manager.cpp" \
-  "$FW/src/ecg_source.cpp" "$FW/src/ecg_pipeline.cpp" \
+  "$FW/src/ble_protocol.cpp" "$FW/src/ble_transport.cpp" "$FW/src/signal_processing.cpp" \
+  "$FW/src/alert_manager.cpp" "$FW/src/ecg_source.cpp" "$FW/src/ecg_pipeline.cpp" \
   -o "$FW/build/test_host"
 "$FW/build/test_host"
 
 # Demo de main.cpp (modo PC)
 "$CXX" -std=c++17 -O2 -Wall -Wextra -Werror -I"$FW/include" \
-  "$FW/src/main.cpp" "$FW/src/ble_protocol.cpp" "$FW/src/signal_processing.cpp" \
+  "$FW/src/main.cpp" "$FW/src/ble_protocol.cpp" "$FW/src/ble_transport.cpp" "$FW/src/signal_processing.cpp" \
   "$FW/src/alert_manager.cpp" "$FW/src/ecg_source.cpp" "$FW/src/ecg_pipeline.cpp" \
   -o "$FW/build/demo_host"
 "$FW/build/demo_host"

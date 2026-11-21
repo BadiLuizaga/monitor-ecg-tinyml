@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "monitor-ecg-tinyml/protocol/v1/message_schema.json",
   "title": "Mensajes JSON del protocolo BLE Monitor ECG TinyML (v1)",
-  "description": "Mensajes de las caracteristicas DEVICE_INFO, STATUS, ALERT y CONTROL. Las muestras ECG NO van en JSON: usan el paquete binario de ECG_DATA (ver ecg_message.json). Tamano maximo de cada mensaje serializado: 180 bytes (JSON compacto, UTF-8).",
+  "description": "Mensajes de las caracteristicas DEVICE_INFO, STATUS, ALERT y CONTROL. Las muestras ECG NO van en JSON: usan el paquete binario de ECG_DATA (ver ecg_message.json). Tamano maximo serializado (JSON compacto, UTF-8): 180 bytes para STATUS, ALERT y CONTROL (una sola notificacion/escritura); 512 bytes para DEVICE_INFO (lectura larga).",
   "oneOf": [
     {"$ref": "#/$defs/device_info"},
     {"$ref": "#/$defs/status"},

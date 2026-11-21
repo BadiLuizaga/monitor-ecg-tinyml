@@ -35,10 +35,15 @@ class EcgPipeline {
   EcgPipeline(IEcgSource& source, IBleTransport& ble, IInferenceEngine& model)
       : src_(source), ble_(ble), model_(model) {}
 
-  // `deviceId` debe vivir mientras viva el pipeline.
+  // `deviceId` debe vivir mientras viva el pipeline. En el ESP32: los 4 dígitos
+  // hexadecimales de la MAC (deviceIdFromMac); sin hardware, un id externo de
+  // 1..ECG_DEVICE_ID_MAX_LEN caracteres. Con un id inválido begin() falla.
   bool begin(const char* deviceId);
   // Procesa todas las muestras disponibles. Llamar desde loop()/tarea.
   void poll(uint32_t nowMs);
+  // Comando de CONTROL. Debe llamarse desde el mismo contexto que poll()
+  // (QueuedBleTransport::service()), nunca desde el callback de la pila BLE.
+  // Sin conexión se ignora, igual que en el simulador Python.
   void onControlWrite(const uint8_t* data, size_t len);
 
   DeviceState state() const { return state_; }
@@ -60,11 +65,18 @@ class EcgPipeline {
   void enqueue(uint32_t r);
   void attachRr(const RrBeat& b, bool timeout);
   void removeAt(size_t k);
+  void syncConnection();
   void setState(DeviceState s);
+  // Error notificado en STATUS, por prioridad: LEAD_OFF > BLE_TX_QUEUE_FULL >
+  // INFERENCE_FAILED > error persistente (MODEL_NOT_LOADED, CONFIG_MISMATCH).
+  ErrorCode currentError() const;
+  void refreshError();  // si el error cambió, lo notifica por STATUS
+  void setTxFull(bool full);
+  void setInferenceFailed(bool failed);
   void sendStatus();
+  void updateStatusReadValue();
   void sendAlert(const char* event, char beatClass, float conf, uint32_t index);
   void sendAck(int32_t cmdId, bool ok, ErrorCode err);
-  void updateReadValues();
 
   IEcgSource& src_;
   IBleTransport& ble_;
@@ -81,8 +93,12 @@ class EcgPipeline {
   uint32_t sampleIndex_ = 0;
   uint32_t eventId_ = 0;
   uint32_t nowMs_ = 0;
+  uint32_t lastStatusReadMs_ = 0;
   bool wasConnected_ = false;
   bool leadOff_ = false;
+  bool txFull_ = false;           // falló una notificación ECG_DATA/ALERT (cola BLE llena)
+  bool inferenceFailed_ = false;  // falló la última inferencia
+  bool statusPending_ = false;    // un STATUS no pudo notificarse: se reintenta en poll()
   const char* deviceId_ = "";
   DeviceState state_ = DeviceState::BOOTING;
   ErrorCode error_ = ErrorCode::OK;

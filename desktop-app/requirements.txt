@@ -1,0 +1,6 @@
+# Entorno: .tools/desktop-venv (Python 3.11, dentro de E:)
+bleak>=3.1
+numpy>=2.0
+PySide6>=6.7
+pyqtgraph>=0.13
+pytest>=8        # solo pruebas

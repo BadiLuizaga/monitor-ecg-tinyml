@@ -11,8 +11,8 @@ Qué está listo, qué falta y cómo conectar el software al ESP32 real.
 | Simulador del dispositivo | ✅ Implementado y probado (**simulación**) | `mock_ecg_device.py selftest` |
 | Lógica del firmware (C++) | ✅ Compilada y probada en PC; **sin compilar para ESP32** | `device-firmware/test/host/` |
 | Fuente de señal del firmware | 🔶 Solo simulada (`TestPatternSource`) | — |
-| Transporte BLE del ESP32 | 🔶 Base portable lista y probada en PC (`QueuedBleTransport`, cola SPSC de `CONTROL`); `Esp32BleTransport` (NimBLE) **pendiente (E2)** | `include/ble_transport.h`, `test/host/` |
-| Proyecto de compilación ESP32 | 🔶 `platformio.ini` preparado (Arduino + NimBLE); **sin placa, sin descargar** | `device-firmware/platformio.ini`, §6 |
+| Transporte BLE del ESP32 | 🔶 Base portable lista y probada en PC (`QueuedBleTransport`, cola SPSC de `CONTROL`); `Esp32BleTransport` (NimBLE) **implementado y compilado para ESP32 (E2); sin flashear, sin probar sobre radio** | `include/ble_transport.h`, `src/esp32/`, `test/host/` |
+| Proyecto de compilación ESP32 | ✅ `[env:cardioalert]` (`esp32dev`) **compila** (versiones fijadas resueltas en E:, §6.2/§6.4); sin flashear | `device-firmware/platformio.ini`, §6 |
 | Adquisición real (ADC/front-end) | ❌ Pendiente de especificaciones | interfaz `IEcgSource`, `hardware_config.h` |
 | Inferencia TFLM en el ESP32 | 🔶 Compilada y ejecutada en PC (T1 no aprobada: ±1 LSB no se cumple; clases 1007/1007). **Sin compilar para ESP32** | `src/inference_tflm.cpp`, `test/tflm/` |
 | App móvil | Contrato definido | `shared/protocol/communication_contract.md` |
@@ -116,7 +116,7 @@ Ver `device-firmware/test/tflm/README.md` |
 | `h2zero/NimBLE-Arduino` | **2.1.0** | `platformio.ini` (`lib_deps`) |
 | Estándar C++ | `-std=gnu++17` (el core 2.x usa `gnu++11` por defecto) | `platformio.ini` |
 
-> **No verificado todavía:** en E0 no se descargó nada, así que las versiones no se han resuelto contra el registro. En E2, la primera compilación debe confirmar que resuelven, que `NimBLECharacteristic::notify()` devuelve `bool` y que compila con `gnu++17`. Si alguna falla, se cambia **solo** la versión en `platformio.ini` y se documenta aquí.
+> **Verificado en E2 (2026-11-26):** las versiones fijadas resuelven contra el registro (`espressif32` 6.9.0, Arduino-ESP32 3.20017.241212 = 2.0.17, toolchain `xtensa-esp32` 8.4.0, `tool-esptoolpy` 1.40501.0, NimBLE-Arduino 2.1.0, PlatformIO Core 6.1.16). `NimBLECharacteristic::notify()` devuelve `bool` y `-std=gnu++17` compila. Sin cambios de versión.
 
 **Disco:** todo queda dentro del proyecto, nunca en `C:`.
 - `platformio.ini` fija `core_dir = ../.tools/platformio` (toolchains, plataformas, librerías y caché).
@@ -143,3 +143,18 @@ void loop() {
   pipeline.poll(millis());
 }
 ```
+
+### 6.4 Compilar (E2)
+
+Placa identificada con esptool: **ESP32-D0WD-V3 rev. v3.1, Flash 4 MB, MAC base 80:F3:DA:60:3C:FC**; `board = esp32dev`. Nombre anunciado: `ECG-TINYML-3CFC` (id = MAC base de eFuse; la dirección BLE que ve un escáner es la base + 2, `...:3C:FE`, **no verificado en radio**).
+
+Entorno (todo en E:): PlatformIO Core en `.tools/platformio-venv`, core en `.tools/platformio` (1,5 GB). En esta máquina Kaspersky intercepta TLS: hay que apuntar `PIP_CERT`, `REQUESTS_CA_BUNDLE` y `SSL_CERT_FILE` a un PEM exportado del almacén de Windows (`.tools/certs/windows-bundle.pem`).
+
+```sh
+source .tools/env.sh
+export PLATFORMIO_CORE_DIR="E:\monitor-ecg-tinyml\.tools\platformio"   # evita crear ~/.platformio
+export PATH="$PWD/.tools/platformio-venv/Scripts:$PATH"
+pio run -d device-firmware -e cardioalert
+```
+
+Resultado: RAM 47 708 B (14,6 % de 327 680), Flash 606 229 B (46,3 % de 1 310 720; `firmware.bin` 612 736 B). Alcance: BLE real + `TestPatternSource` a 360 Hz (`PacedSource`); sin AD8232, sin TFLM (`MODEL_NOT_LOADED`) y `hardware_config.h` sin confirmar. **Pendiente: flashear y validar con la app / un escáner BLE.**

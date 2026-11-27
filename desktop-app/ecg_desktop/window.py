@@ -370,6 +370,8 @@ class MainWindow(QMainWindow):
         self.combo.clear()
         for d in devs:
             self.combo.addItem(f"{d.name or 'sin nombre'}   ({d.address}, {d.rssi} dBm)", d.address)
+        if devs:
+            self.combo.setCurrentIndex(0)  # con placeholder, addItem no selecciona nada
         self._set_conn("idle")
         self.statusBar().showMessage(f"{len(devs)} dispositivo(s) encontrado(s)." if devs else
                                      "No se encontró ningún ECG-TINYML. ¿Está encendido y anunciando?")
